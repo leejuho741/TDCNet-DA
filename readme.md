@@ -5,8 +5,6 @@
 **[English](#english) · [한국어](#korean)**
 
 ![Error maps](assets/error_maps.png)
-<sub>Absolute depth error on TransCG test scenes (black = 0, yellow ≥ 50 mm). Ours 12.2 / 16.5 mm, TDCNet 35.5 / 29.6 mm.<br>
-TransCG test 장면의 절대 깊이 오차 (검정 = 0, 노랑 ≥ 50 mm). 개선 모델 12.2 / 16.5 mm, TDCNet 35.5 / 29.6 mm.</sub>
 
 </div>
 
