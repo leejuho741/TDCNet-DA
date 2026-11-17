@@ -1,0 +1,12 @@
+# imported by modules of the ReMake repository (TDCNet code, official TransCG loader, ReMake baseline)
+timm
+einops
+tqdm
+termcolor
+tensorboardX
+open3d
+OpenEXR
+grad-cam
+monai
+pyrealsense2
+git+https://github.com/facebookresearch/segment-anything.git
