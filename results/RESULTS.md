@@ -62,6 +62,18 @@ Other ablations (test, exp. 09):
 | **+ 2 px erosion (final)** | 10.47 | 27.35 | 1.43 |
 | + flip TTA | 10.24 | 27.02 | 1.42 |
 
+Probability as blend weight — test, all 23,524 images (exp. 23). Same depth model and head; only the weight changes.
+
+| Weight from the head probability p | Transparent | Boundary | Surround | Background |
+|---|--:|--:|--:|--:|
+| no mask (model output everywhere) | 10.23 | 28.32 | 35.51 | 275.07 |
+| w = p | 12.60 | 20.65 | 4.84 | 0.55 |
+| w = clip((p − 0.05) / 0.25) | 11.84 | 23.09 | 7.11 | 0.83 |
+| w = clip((p − 0.1) / 0.4) | 12.23 | 22.43 | 6.17 | 0.68 |
+| w = clip((p − 0.3) / 0.4) | 12.88 | 21.92 | 5.19 | 0.53 |
+| p > 0.5, hard switch (re-measured) | 13.06 | 22.48 | 5.44 | 0.55 |
+| final (hysteresis + erosion + distance blend, re-measured) | 10.48 | 27.34 | 16.48 | 1.43 |
+
 Sweep: 2 heads x 14 cuts x erosion 0–4 x 8 blend ranges = 1,120 settings, selected on test[0::8] (2,941) and
 re-measured on test[4::8] (2,940). 303 settings are Pareto-optimal on (transparent, surround, background); the rule
 "lowest transparent error without worse surround or background" picks the final setting for both heads.
@@ -120,3 +132,31 @@ was prepared but not run, so the COCO effect is not separated from the longer tr
 
 Exp. 14 (all methods in one run); accurate and student from exp. 15 / 18. The same model varies by about ±3 FPS
 between runs (fast: 66 in exp. 14, 69 in exp. 15 and 17).
+
+## 8. ReMake at our resolution (exp. 24, 25) — Tesla T4
+
+ReMake's official checkpoint is trained at 640x480. Accuracy on a test subset (every 10th perspective of each test
+scene, 2,381 images), GT mask as input, region metrics:
+
+| ReMake input | Transparent | δ1.05 | Boundary |
+|---|--:|--:|--:|
+| 640x480 (official) | 11.43 | 93.29 | 10.24 |
+| 320x240, Depth Anything at 518x686 | 23.62 | 67.36 | 17.54 |
+| 320x240, Depth Anything at 252x336 | 23.63 | 67.34 | 17.55 |
+
+(The background column of exp. 24 is not comparable with Section 1: it used our 320 cache, whose ground truth is clipped
+at 1.5 m, instead of the official loader.)
+
+Speed, one run on a Tesla T4, batch 1, fp16 + CUDA graph (exp. 25):
+
+| Model | FPS | ms |
+|---|--:|--:|
+| TDCNet, 320x240 | 74.2 | 13.47 |
+| Ours – fast, 320x240 | 29.8 | 33.51 |
+| ReMake 640x480 (official) | 9.2 | 109.05 |
+| ReMake 320x240, Depth Anything 518x686 | 16.4 | 60.92 |
+| ReMake 320x240, Depth Anything 252x336 | 36.3 | 27.57 |
+
+Breakdown of ReMake at 640x480 on the T4 (exp. 24): network 69.2 ms, Depth Anything-Small 39.8 ms. L4/T4 time ratio:
+ReMake 640 1.98, ours 2.20, TDCNet 2.38. ReMake times exclude mask generation (the GT mask is given).
+
