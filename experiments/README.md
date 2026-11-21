@@ -27,3 +27,8 @@ repositories, and reads/writes under `MyDrive/tdc_finetune/`. The cleaned implem
 | 18 | `18_student_speed.py` | student vs teacher speed, same setting | 68 / 85 FPS |
 | 19 | `19_sota_full_test.py` | the comparison table on the full test set | comparison table |
 | 20 | `20_gate_plugin.py` | our mask + gate added to FDCT / ReMake / TDCNet | plug-in table |
+| 21 | `21_pred_figs.py` | depth predictions and error maps of one scene for each method | slide / README figures |
+| 22 | `22_mask_figs.py` | GT and predicted masks of the same scene | slide figures |
+| 23 | `23_prob_gate.py` | head probability used directly as the blend weight | mask post-processing table |
+| 24 | `24_remake_resolution.py` | ReMake at 640x480 vs 320x240: accuracy and speed breakdown (T4) | ReMake 23.6 mm at 320 |
+| 25 | `25_speed_same_resolution.py` | ours, TDCNet and ReMake timed in one run at the same resolution (T4) | same-GPU speed |
