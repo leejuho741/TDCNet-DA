@@ -22,7 +22,7 @@ depth completion. Recent state-of-the-art models have the following strengths an
 
 | | Strength | Limitation |
 |---|---|---|
-| TDCNet [5] | CNN + Transformer fusion; fast; no mask needed | re-predicts the whole depth map: 282 mm error on opaque background |
+| TDCNet [5] | CNN + Transformer fusion; fast; no mask needed | its loss covers only the transparent region, so the opaque background is never supervised; yet it re-predicts the whole depth map: 282 mm error on opaque background |
 | ReMake [6] | accurate, thanks to the Depth Anything [7] prior | needs the transparent mask as input (in practice another model, e.g. SAM, must produce it); sensitive to mask errors (11.4 → 15.8 mm with a predicted mask); 18 FPS at 640×480 |
 
 The improved model combines the strengths of both:
@@ -313,7 +313,7 @@ assets/         figures
 
 | | 장점 | 한계 |
 |---|---|---|
-| TDCNet [5] | CNN + Transformer 융합, 빠름, 마스크 불필요 | depth map 전체를 다시 예측해 불투명 배경 오차 282 mm |
+| TDCNet [5] | CNN + Transformer 융합, 빠름, 마스크 불필요 | loss가 투명 영역에만 걸려 불투명 배경은 학습되지 않는데, 출력은 depth map 전체를 다시 예측해 불투명 배경 오차 282 mm |
 | ReMake [6] | Depth Anything [7]의 사전 지식으로 정확함 | 투명 마스크가 입력으로 필요(실제로는 SAM 등 별도 모델로 만들어야 함), 마스크 오류에 민감(예측 마스크 사용 시 11.4 → 15.8 mm), 640×480에서 18 FPS |
 
 개선 모델은 두 장점을 합칩니다.
