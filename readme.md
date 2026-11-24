@@ -16,32 +16,30 @@
 
 ![RGB, sensor depth, ground truth](assets/problem.png)
 
-Commodity RGB-D cameras lose depth on transparent objects or measure it wrong. Grasping and 3D reconstruction need
-that depth, so the missing parts must be filled from the RGB image and the remaining sensor depth. This task is called
-depth completion. Recent state-of-the-art models have the following strengths and limitations:
+Commodity RGB-D cameras lose depth on transparent objects. Robotic grasping, 3D reconstruction and autonomous driving
+need accurate depth, so the missing or wrong depth must be filled in from the RGB image and the remaining sensor depth.
+This task is called depth completion. Recent state-of-the-art models have the following strengths and limitations:
 
 | | Strength | Limitation |
 |---|---|---|
-| TDCNet [5] | CNN + Transformer fusion; fast; no mask needed | its loss covers only the transparent region, so the opaque background is never supervised; yet it re-predicts the whole depth map: 282 mm error on opaque background |
-| ReMake [6] | accurate, thanks to the Depth Anything [7] prior | needs the transparent mask as input (in practice another model, e.g. SAM, must produce it); sensitive to mask errors (11.4 → 15.8 mm with a predicted mask); 18 FPS at 640×480 |
+| TDCNet [5] | CNN + Transformer fusion, fast, no mask needed | Its loss function only covers the transparent region, while it predicts the whole depth map. This leaves a huge background error (282 mm) |
+| ReMake [6] | Accurate with the ground-truth mask, thanks to the Depth Anything [7] prior | Needs a transparent mask as input, which in practice must come from another model (e.g. SAM). Sensitive to mask errors (11.4 → 15.8 mm with a predicted mask). 18 FPS at 640×480 |
 
-The improved model combines the strengths of both:
-* **Feature injection:** unlike ReMake, which uses Depth Anything's final output (a single depth channel), we inject
+Our improved model combines the strengths of both:
+* **Feature injection:** Unlike ReMake, which uses Depth Anything's final output (a single depth channel), we inject
   the hidden-layer features of its encoder directly. They carry more information than one depth channel, and skipping
-  the decoder saves its cost. Small projection layers (0.41M) reshape them to match TDCNet's encoder features, to which
-  they are added; zero initialization keeps training stable.
-* **Mask head + gate:** a lightweight mask head on the same Depth Anything features predicts the transparent region,
-  and this mask builds a gate. The model's estimate is used in the transparent region and the sensor value elsewhere,
-  with a smooth distance-based blend at the boundary.
-
+  the decoder saves its cost. Small projection layers (0.41M) reshape them to match TDCNet's encoder features. They are zero-initialized, so training starts from the original TDCNet.
+* **Mask head + gate:** A lightweight mask head on the same Depth Anything features predicts the transparent region,
+  and the mask drives a gate: the model's estimate is used inside the transparent region, the sensor value outside, and
+  the two are blended smoothly near the edge. This nearly removes the background error.
+  
 **Results**
-* **TransCG:** transparent-region RMSE of **10.48 mm (66 FPS)**, or **10.14 mm (31 FPS)** in the accuracy-oriented mode.
+* **TransCG:** Transparent region RMSE of **10.48 mm (66 FPS)**, or **10.14 mm (31 FPS)** in the accurate mode.
   * Better than ReMake given the ground-truth mask (11.37 mm).
-  * Opaque-background error drops from 282 mm (TDCNet) to **1.4 mm** (−99.5%). The gate also works on other models.
-* **Generalization:** trained on TransCG and tested on ClearGrasp, label-free adaptation with 173 unlabelled images
+  * Opaque background error drops from 282 mm (TDCNet) to **1.4 mm** (−99.5%). The gate also works on other models.
+* **Generalization:** Trained on TransCG and tested on ClearGrasp. Adapting on 173 unlabelled images
   reaches **17.9 mm**. This is the lowest value in the comparison, but the models adapt different parts, so it is
   not a like-for-like comparison.
-* **Distillation:** distilling Depth Anything into a ResNet-18 removes it at inference; the model then runs at 85 FPS.
 
 ## 2. Method
 
@@ -49,11 +47,11 @@ The improved model combines the strengths of both:
 
 ### 2.1 Depth Anything feature injection
 
-TDCNet fuses its Transformer-branch (RGB-D) and CNN-branch (depth) features at four resolutions before decoding. At
-each fusion, we additionally add Depth Anything features:
+TDCNet fuses its Transformer branch (RGB-D) and CNN branch (depth) features at four resolutions before decoding. At
+each fusion, we also add Depth Anything features:
 
 1. The Depth Anything V2-Base encoder runs once per frame at 252x336.
-2. Its layer-3, 6, 9 and 12 features (768 channels, 18x24 resolution) each pass through a projection: a 1x1 conv down
+2. Its features from layers 3, 6, 9 and 12 (768 channels, 18x24 resolution) each pass through a projection: a 1x1 conv down
    to 64 channels, GroupNorm, GELU, then a 3x3 conv to the channel count of that stage.
 3. The result is upsampled and added to the matching stage.
 
@@ -61,7 +59,7 @@ Training follows TDCNet's official recipe, from scratch.
 
 <img src="assets/da_injection.png" width="480">
 
-ReMake uses Depth Anything's final result (a relative depth map); we use its intermediate features. They are richer
+ReMake uses Depth Anything's final output (a relative depth map), whereas we use its intermediate features. They are richer
 than a single depth channel, and skipping the decoder is faster.
 
 ### 2.2 Mask head and gate
@@ -74,7 +72,7 @@ The **mask head** predicts where the transparent objects are, with no ground-tru
 After training, its IoU with the ground-truth mask is 0.84.
 
 The **gate** turns the head's probability into per-pixel blend weights:
-1. Hysteresis thresholding: start where p > 0.5 and grow into p > 0.1. Faint parts survive if they are attached to a
+1. Hysteresis thresholding: start from pixels with p > 0.5 and grow into connected pixels with p > 0.1. Faint parts survive if they are attached to a
    confident part.
 2. The mask is eroded by 2 px to drop uncertain edge pixels.
 3. Distance blend: the model weight is 1 inside the mask and falls linearly to 0 between 4 and 12 px outside it, so no
@@ -85,22 +83,20 @@ The **gate** turns the head's probability into per-pixel blend weights:
 ![Before / after the gate](assets/gate_effect.png)
 <sub>Error before and after the gate on a D435 scene: background 54 mm → 4.9 mm.</sub>
 
-The head and gate are not tied to a specific model and can be used with other models (Sec. 3.1).
-
 ### 2.3 Two modes
 
-* **Fast:** one Depth Anything pass is shared by the depth model and the head.
-* **Accurate:**
-  * the head gets a second Depth Anything pass at 378x504. The feature resolution becomes 27x36 (1.5x), which gives
-    finer object outlines;
-  * the depth model uses left-right test-time augmentation (TTA).
+* **Fast mode:** One Depth Anything pass is shared by the depth model and the head.
+* **Accurate mode:**
+  * The head gets a second Depth Anything pass at 378x504. The feature resolution becomes 27x36 (1.5x), which gives
+    finer object outlines.
+  * The depth model uses left-right test time augmentation (TTA).
 
 ### 2.4 Distillation
 
 ![Distillation](assets/distillation.png)
 
-A ResNet-18 with small adapters learns to imitate the four feature maps. The parameter count drops from 86.6M (Depth
-Anything encoder) to 17.6M.
+A ResNet-18 with small adapters learns to imitate the four Depth Anything feature maps. The parameter count drops from 86.6M (Depth Anything encoder) to 17.6M.
+Distillation raises the speed from 66 to 85 FPS, but the error grows from 10.48 to 11.31 mm, so we left it out of the final model.
 
 ### 2.5 Label-free adaptation
 
@@ -141,13 +137,9 @@ Speed: NVIDIA L4, batch 1, fp16 + CUDA graphs. Boundary: ±3 px around the mask 
 \* ReMake at its official 640×480 input, mask generation not included (in practice a model such as SAM must produce
 the mask).
 
-* **Reproduction check:** the re-measured baselines match their papers (TDCNet 12, TODE 13, FDCT 15 mm).
-* **ReMake's mask dependence:** given our predicted mask instead of the ground truth, ReMake drops to 15.76 mm
+* **ReMake's mask dependence:** given our predicted mask instead of the ground truth, ReMake worsens to 15.76 mm
   (+39%); ours moves only from 10.28 (GT mask) to 10.48 mm (+2%).
-* **ReMake at our resolution:** its checkpoint is trained at 640×480. At 320×240 without retraining it reaches
-  23.6 mm (test subset, 2,381 images). On one GPU (T4) at 320×240, ours runs at 29.8 FPS and ReMake at 16.4 FPS, or
-  36.3 FPS with a smaller Depth Anything input (same 23.6 mm).
-* **Gate on other models:** it also works elsewhere. Background error falls from 16.90 to 1.09 mm for FDCT, and from
+* **Gate on other models:** the gate also helps other models. Background error falls from 16.90 to 1.09 mm for FDCT, and from
   4.57 to 0.78 mm for ReMake with a predicted mask.
 
 ### 3.2 Incremental ablation (TransCG test, all 23,524 images)
@@ -164,7 +156,7 @@ the mask).
 * **Feature injection** improves the transparent region.
   * Retraining with another seed gives almost the same result (10.22 mm).
   * Training it jointly from scratch beats adding it to a frozen TDCNet (11.74 mm).
-* **The gate** removes the background error at a cost of about 0.25 mm inside the mask.
+* **The gate** nearly removes the background error at a cost of about 0.25 mm inside the mask.
 * **The high-res head** gives a better mask (IoU 0.842 → 0.860) and lowers the background error further.
 * **Head size:** a head on Depth Anything V2-Small features is worse than one on V2-Base.
 
@@ -198,12 +190,12 @@ region, because the probability stays below 1 inside many objects; rescaling it 
 † TDCNet is frozen and only the injection is trained, with strong augmentation that imitates sensor failures (holes and
 behind-object values in the transparent region, zoom, blur).
 
-* **Procedure:** every method gets the same label-free losses (Sec. 2.5). Ours trains the injection projections
+* **Procedure:** Every method gets the same label-free losses (Sec. 2.5). Ours trains the injection projections
   (0.41M); models without that module train their normalization layers (about 0.01M).
-* **With more data:** ours kept improving with more images, while the other methods got worse from 5 to 173 images.
+* **With more data:** Ours kept improving with more images, while the other methods got worse from 5 to 173 images.
   The number of trained parameters differs (0.41M vs about 0.01M), however, so we have not yet separated the effect of
   the architecture from that of adaptation capacity.
-* **Without adaptation:** ours is worse than FDCT and TODE.
+* **Without adaptation:** Ours is worse than FDCT and TODE.
 
 ### 3.4 Distillation
 
@@ -213,20 +205,16 @@ behind-object values in the transparent region, zoom, blur).
 | Student, TransCG only | 11.56 | 61.1 | 85 |
 | Student, + 5k COCO photos | 11.31 | 50.7 | 85 |
 
-* **Speed:** feature extraction drops from 4.39 to 1.72 ms (2.6x faster). End to end the gain is 25%, because the
-  depth model and head now take most of the time. The three models were timed in the same run; runs differ by about
-  ±3 FPS, hence 68 here vs 66 in Sec. 3.1.
-
 ## 4. Limitations and future work
 
 ![Boundary errors](assets/boundary_failure.png)
 
-* **Object boundaries:** error concentrates in a narrow band at the mask edge: 27.3 mm on the boundary, vs 9.7 mm for
+* **Object boundaries:** Error concentrates in a narrow band at the mask edge: 27.3 mm on the boundary, vs 9.7 mm for
   ReMake given the ground-truth mask.
 * **Generalization without adaptation:** ClearGrasp RMSE is 48.6 mm without adaptation, worse than FDCT (24.9 mm). Adapting
-  on a few unlabelled images reduces much of the gap.
+  on a few unlabelled images closes much of the gap.
 * **Sensor gap:** LiDAR (L515, 13.2 mm) is harder than stereo (D435, 7.7 mm).
-* **GPU:** real time holds on an L4 (66 FPS); on a T4 the fast mode runs at about 30 FPS.
+* **GPU:** Real-time speed was measured on an L4 (66 FPS); on a T4 the fast mode runs at about 30 FPS.
 
 **Future work**
 * A high-resolution head used only near object boundaries.
@@ -238,8 +226,8 @@ behind-object values in the transparent region, zoom, blur).
 ## 5. Conclusion
 
 We inject a frozen foundation model's intermediate features into a fast depth completion network and gate its output
-with a self-predicted mask. The result is more accurate than a method that needs the ground-truth mask, while needing
-no ground-truth mask, leaving opaque surfaces almost untouched, and running in real time.
+with a self-predicted mask. The resulting model is more accurate than a method that needs the ground-truth mask, yet it needs no mask itself,
+leaves opaque surfaces almost untouched and runs in real time.
 
 ## References
 
@@ -309,25 +297,23 @@ assets/         figures
 
 ![RGB, 센서 depth, 정답](assets/problem.png)
 
-일반 RGB-D 카메라는 투명 물체에서 깊이를 잃거나 틀리게 측정합니다. 로봇 집기나 3D 복원에는 이 깊이가 필요하므로, RGB 이미지와 남아 있는 센서 깊이로 빈 곳을 채워야 하며, 이를 depth completion이라 합니다. 최근 최고 성능 모델들은 다음 장점과 한계를 가집니다.
+일반 RGB-D 카메라는 투명 물체에서 깊이를 잃거나 틀리게 측정합니다. 로봇 집기, 3D 복원, 자율 주행에는 정확한 깊이가 필요하므로, RGB 이미지와 남아 있는 센서 깊이로 빈 곳을 채워야 하며, 이를 depth completion이라 합니다. 최근 최고 성능 모델들은 다음 장점과 한계를 가집니다.
 
 | | 장점 | 한계 |
 |---|---|---|
 | TDCNet [5] | CNN + Transformer 융합, 빠름, 마스크 불필요 | loss가 투명 영역에만 걸려 불투명 배경은 학습되지 않는데, 출력은 depth map 전체를 다시 예측해 불투명 배경 오차 282 mm |
-| ReMake [6] | Depth Anything [7]의 사전 지식으로 정확함 | 투명 마스크가 입력으로 필요(실제로는 SAM 등 별도 모델로 만들어야 함), 마스크 오류에 민감(예측 마스크 사용 시 11.4 → 15.8 mm), 640×480에서 18 FPS |
+| ReMake [6] | 정답 마스크를 받으면 Depth Anything [7]의 사전 지식으로 정확함 | 투명 마스크가 입력으로 필요(실제로는 SAM 등 별도 모델로 만들어야 함), 마스크 오류에 민감(예측 마스크 사용 시 11.4 → 15.8 mm), 640×480에서 18 FPS |
 
 개선 모델은 두 장점을 합칩니다.
-* **특징 주입:** ReMake가 Depth Anything의 최종 출력(깊이 한 채널)을 쓰는 것과 달리, 인코더의 hidden layer 특징을 직접 주입합니다. 깊이 한 채널보다 담긴 정보가 많고, 디코더를 건너뛰어 그만큼 빠릅니다. 작은 projection 층(0.41M)으로 모양을 맞춰 TDCNet 인코더 특징에 더하며, zero initialization으로 학습이 안정적으로 되도록 합니다.
+* **특징 주입:** ReMake가 Depth Anything의 최종 출력(깊이 한 채널)을 쓰는 것과 달리, 인코더의 hidden layer 특징을 직접 주입합니다. 깊이 한 채널보다 담긴 정보가 많고, 디코더를 건너뛰어 그만큼 빠릅니다. 작은 projection 층(0.41M)으로 모양을 맞춰 TDCNet 인코더 특징에 더하며, projection을 0으로 초기화(zero initialization)해 학습이 원래 TDCNet에서 출발합니다.
 
-* **마스크 head + 게이트:** 같은 Depth Anything 특징을 쓰는 가벼운 마스크 head가 투명 영역을 예측하고, 이 마스크로 게이트를 만듭니다. 투명 영역에는 모델 추정값을, 그 밖에는 센서값을 쓰며, 경계에서는 거리에 따라 두 값을 부드럽게 섞습니다.
+* **마스크 head + 게이트:** 같은 Depth Anything 특징을 쓰는 가벼운 마스크 head가 투명 영역을 예측하고, 이 마스크로 게이트를 만듭니다. 투명 영역에는 모델 추정값을, 그 밖에는 센서값을 쓰며, 경계에서는 거리에 따라 두 값을 부드럽게 섞습니다. 이로써 배경 오차가 거의 사라집니다.
 
 **결과**
 * **TransCG:** 투명 영역 RMSE **10.48 mm(66 FPS)**, 성능 위주 모드에서는 **10.14 mm(31 FPS)** 입니다.
   * 정답 마스크를 받은 ReMake(11.37 mm)보다 좋습니다.
   * 불투명 배경 오차는 282 mm(TDCNet)에서 **1.4 mm**로 줄었습니다(−99.5%). 게이트는 다른 모델에 붙여도 효과가 있습니다.
 * **Generalization:** TransCG로 학습한 뒤 ClearGrasp에서 추론할 때, 라벨 없는 사진 173장으로 적응하면 **17.9 mm**까지 낮아집니다. 비교한 방법 중 가장 낮은 값이지만, 모델마다 적응하는 부분이 달라 같은 조건의 비교는 아닙니다.
-
-* **Distillation:** ResNet-18로 DA를 distillation 하면 추론 시 Depth Anything 없이 85 FPS로 동작합니다.
 
 ## 2. 방법
 
@@ -345,7 +331,7 @@ TDCNet은 Transformer 갈래(RGB-D)와 CNN 갈래(depth)의 특징을 4개 해�
 
 <img src="assets/ko/da_injection.png" width="480">
 
-ReMake는 Depth Anything의 최종 결과(상대 깊이 맵)를 쓰지만, 우리는 중간 층 특징을 씁니다. 깊이 한 채널보다 정보가 풍부하고, 디코더를 건너뛰어 더 빠릅니다.
+ReMake는 Depth Anything의 최종 출력(상대 깊이 맵)을 쓰지만, 우리는 중간 층 특징을 씁니다. 깊이 한 채널보다 정보가 풍부하고, 디코더를 건너뛰어 더 빠릅니다.
 
 ### 2.2 마스크 head와 게이트
 
@@ -368,8 +354,6 @@ ReMake는 Depth Anything의 최종 결과(상대 깊이 맵)를 쓰지만, 우�
 ![게이트 전후](assets/gate_effect.png)
 <sub>D435 장면의 게이트 전후 오차: 배경 54 mm -> 4.9 mm</sub>
 
-head와 게이트는 특정 모델에 종속적이지 않고 다른 모델에서도 활용이 가능합니다. (3.1절)
-
 ### 2.3 두 가지 모드
 
 * **속도 위주:** Depth Anything 한 번을 깊이 모델과 head가 같이 씁니다.
@@ -384,6 +368,7 @@ head와 게이트는 특정 모델에 종속적이지 않고 다른 모델에서
 ![증류](assets/ko/distillation.png)
 
 작은 어댑터를 붙인 ResNet-18이 특징 4개를 흉내 내도록 학습합니다. 파라미터 수가 Depth Anything 인코더 86.6M에서 17.6M으로 감소합니다.
+증류하면 속도는 66에서 85 FPS로 오르지만 오차가 10.48에서 11.31 mm로 늘어, 최종 모델에는 넣지 않았습니다.
 
 ### 2.5 라벨 없는 적응
 
@@ -420,10 +405,7 @@ head와 게이트는 특정 모델에 종속적이지 않고 다른 모델에서
 속도: NVIDIA L4, batch 1, fp16 + CUDA graph. 경계: 마스크 가장자리 ±3 px, 배경: 마스크 밖 15 px 초과.
 \* ReMake는 공식 640×480 입력 기준이며, 마스크 생성 시간은 제외(실제로는 SAM 같은 모델로 마스크를 만들어야 함).
 
-* **재현 확인:** 다시 잰 비교 모델 값은 논문 값과 맞습니다(TDCNet 12, TODE 13, FDCT 15 mm).
-
 * **ReMake의 마스크 의존:** 정답 마스크 대신 우리 예측 마스크를 주면 ReMake는 15.76 mm로 나빠집니다(+39%). 개선 모델은 정답 마스크 10.28에서 예측 마스크 10.48 mm로 거의 그대로입니다(+2%).
-* **우리 해상도에서의 ReMake:** 공식 체크포인트는 640×480으로 학습됐습니다. 재학습 없이 320×240으로 돌리면 23.6 mm입니다(test 일부 2,381장). 같은 GPU(T4), 같은 320×240에서 개선 모델은 29.8 FPS, ReMake는 16.4 FPS이고, Depth Anything 입력까지 줄이면 36.3 FPS지만 정확도는 그대로 23.6 mm입니다.
 * **게이트의 일반성:** 다른 모델에 붙여도 효과가 있습니다. 배경 오차가 FDCT는 16.90 → 1.09 mm, 예측 마스크를 쓴 ReMake는 4.57 → 0.78 mm로 줄었습니다.
 
 ### 3.2 Incremental ablation (TransCG test 전체 23,524장)
@@ -441,7 +423,7 @@ head와 게이트는 특정 모델에 종속적이지 않고 다른 모델에서
   * 시드를 바꿔 다시 학습해도 10.22 mm로 거의 같습니다.
 
   * 고정된 TDCNet에 덧붙이는 방식(11.74 mm)보다 처음부터 같이 학습하는 쪽이 좋습니다.
-* **게이트:** 배경 오차를 없애는 대신 마스크 안에서 약 0.25 mm 손해를 봅니다.
+* **게이트:** 배경 오차를 거의 없애는 대신 마스크 안에서 약 0.25 mm 손해를 봅니다.
 
 * **고해상도 head:** 마스크가 더 정확해지고(IoU 0.842 → 0.860) 배경 오차가 더 줄어듭니다.
 
@@ -487,8 +469,6 @@ head 확률을 그대로 가중치로 쓰면 배경은 깨끗하지만, 물체 �
 | 선생: Depth Anything을 쓰는 개선 모델(속도 위주) | 10.48 | 48.6 | 68 |
 | 학생, TransCG만 | 11.56 | 61.1 | 85 |
 | 학생, + COCO 사진 5천 장 | 11.31 | 50.7 | 85 |
-
-* **속도:** 특징 추출은 4.39 ms에서 1.72 ms로 2.6배 빨라졌습니다. 전체로는 25% 빨라졌는데, 깊이 모델과 head가 시간 대부분을 차지하기 때문입니다. 세 모델을 같은 실행에서 쟀고, 실행마다 ±3 FPS 차이가 있어 3.1절의 66 FPS와 다릅니다.
 
 ## 4. 한계와 향후 연구
 
